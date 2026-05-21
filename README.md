@@ -70,6 +70,10 @@ The first snooze moves the follow-up one hour out. On the second snooze attempt,
 
 When the bot starts, it immediately checks for missed follow-ups. Any item whose `followUpAt` is in the past and whose status is `waiting_on_me` or `delayed` is marked `overdue`, a history entry is added, and you get one catch-up digest DM listing the newly overdue items.
 
+## Digest schedule
+
+FollowUp Bot sends daily digest DMs at 09:00, 15:00, and 19:00 in your configured timezone. Individual due reminders are still checked every 5 minutes and only sent once.
+
 ## Timezone
 
 The bot defaults to `Asia/Kolkata`. Change `TIMEZONE` in `.env` if you want deadlines, digests, and display times to use another IANA timezone such as `America/New_York` or `Europe/London`.

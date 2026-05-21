@@ -62,6 +62,7 @@ export function scheduleDailyDigest(client, userId) {
   };
 
   cron.schedule('0 9 * * *', sendDigest, { timezone: TIMEZONE });
+  cron.schedule('0 15 * * *', sendDigest, { timezone: TIMEZONE });
   cron.schedule('0 19 * * *', sendDigest, { timezone: TIMEZONE });
 }
 
