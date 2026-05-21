@@ -1,0 +1,27 @@
+{
+  "followups": [
+    {
+      "id": "92b00b66-8c52-4f9f-ad15-07faad9811d7",
+      "shortId": "WHY-01",
+      "client": "Whyy",
+      "project": "Surviepvp",
+      "platform": "discord",
+      "context": "Render progress and logo progress",
+      "promised": "",
+      "sourceUrl": "",
+      "priority": "high",
+      "status": "waiting_on_me",
+      "snoozeCount": 0,
+      "snoozeReason": "",
+      "followUpAt": "2026-05-21T16:30:00.000Z",
+      "deadline": "2026-05-21T16:30:00.000Z",
+      "lastTouchedAt": "2026-05-21T01:58:01.744Z",
+      "createdAt": "2026-05-21T01:58:01.744Z",
+      "updatedAt": "2026-05-21T01:58:01.744Z",
+      "history": []
+    }
+  ],
+  "clientCounters": {
+    "WHY": 1
+  }
+}
