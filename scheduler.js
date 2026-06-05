@@ -1,13 +1,18 @@
 import cron from 'node-cron';
-import { dailyDigestCard, reminderCard, weeklyReportCard } from './cards.js';
+import { catchUpDigestCard, dailyDigestCard, reminderCard, weeklyReportCard } from './cards.js';
 import { appendHistory, getAllFollowups, updateFollowup } from './store.js';
 import { generateWeeklyStats } from './report.js';
 
 const TIMEZONE = process.env.TIMEZONE || 'Asia/Kolkata';
 const REMINDER_INTERVAL_HOURS = Number(process.env.REMINDER_INTERVAL_HOURS || 3);
 const REMINDER_INTERVAL_MS = REMINDER_INTERVAL_HOURS * 60 * 60 * 1000;
+let schedulerStarted = false;
+let lastDailyDigestMinuteKey = '';
 
 export function startScheduler(client, userId) {
+  if (schedulerStarted) return;
+  schedulerStarted = true;
+
   catchUpOnStart(client, userId);
   scheduleFollowUps(client, userId);
   scheduleDailyDigest(client, userId);
@@ -33,7 +38,7 @@ export async function catchUpOnStart(client, userId) {
     newlyOverdue.push(updated);
   }
 
-  await user.send(dailyDigestCard([], newlyOverdue));
+  await user.send(catchUpDigestCard(newlyOverdue));
 }
 
 export function scheduleFollowUps(client, userId) {
@@ -76,6 +81,10 @@ function isRecurringReminderDue(followup, now) {
 
 export function scheduleDailyDigest(client, userId) {
   const sendDigest = async () => {
+    const minuteKey = getMinuteKey(new Date());
+    if (lastDailyDigestMinuteKey === minuteKey) return;
+    lastDailyDigestMinuteKey = minuteKey;
+
     const user = await client.users.fetch(userId);
     const followups = await getAllFollowups();
     const waiting = followups.filter((followup) => followup.status === 'waiting_on_me');
@@ -86,6 +95,10 @@ export function scheduleDailyDigest(client, userId) {
   cron.schedule('0 9 * * *', sendDigest, { timezone: TIMEZONE });
   cron.schedule('0 15 * * *', sendDigest, { timezone: TIMEZONE });
   cron.schedule('0 19 * * *', sendDigest, { timezone: TIMEZONE });
+}
+
+function getMinuteKey(date) {
+  return date.toISOString().slice(0, 16);
 }
 
 export function scheduleWeeklyReport(client, userId) {
