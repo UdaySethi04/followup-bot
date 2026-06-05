@@ -26,6 +26,7 @@ BOT_TOKEN=your_bot_token_here
 CLIENT_ID=your_application_client_id_here
 YOUR_USER_ID=your_discord_user_id_here
 TIMEZONE=Asia/Kolkata
+REMINDER_INTERVAL_HOURS=3
 ```
 
 ## Keeping it alive
@@ -73,6 +74,10 @@ When the bot starts, it immediately checks for missed follow-ups. Any item whose
 ## Digest schedule
 
 FollowUp Bot sends daily digest DMs at 09:00, 15:00, and 19:00 in your configured timezone. Individual due reminders are still checked every 5 minutes and only sent once.
+
+## Reminder frequency
+
+FollowUp Bot checks every 5 minutes. If a follow-up has a specific due time, it sends a reminder when that time arrives. If a loop is still `waiting_on_me`, it also re-nudges you every `REMINDER_INTERVAL_HOURS` hours, which defaults to 3.
 
 ## Timezone
 

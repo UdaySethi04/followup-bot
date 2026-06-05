@@ -4,6 +4,8 @@ import { appendHistory, getAllFollowups, updateFollowup } from './store.js';
 import { generateWeeklyStats } from './report.js';
 
 const TIMEZONE = process.env.TIMEZONE || 'Asia/Kolkata';
+const REMINDER_INTERVAL_HOURS = Number(process.env.REMINDER_INTERVAL_HOURS || 3);
+const REMINDER_INTERVAL_MS = REMINDER_INTERVAL_HOURS * 60 * 60 * 1000;
 
 export function startScheduler(client, userId) {
   catchUpOnStart(client, userId);
@@ -40,16 +42,36 @@ export function scheduleFollowUps(client, userId) {
     const now = Date.now();
     const followups = await getAllFollowups();
     const due = followups.filter((followup) =>
-      followup.followUpAt &&
-      new Date(followup.followUpAt).getTime() <= now &&
-      followup.status === 'waiting_on_me'
+      followup.status === 'waiting_on_me' &&
+      (
+        isFollowupDue(followup, now) ||
+        isRecurringReminderDue(followup, now)
+      )
     );
 
     for (const followup of due) {
       await user.send(reminderCard(followup));
-      await updateFollowup(followup.shortId, { followUpAt: null });
+      await updateFollowup(followup.shortId, {
+        followUpAt: isFollowupDue(followup, now) ? null : followup.followUpAt,
+        lastReminderAt: new Date(now).toISOString()
+      });
     }
   }, { timezone: TIMEZONE });
+}
+
+function isFollowupDue(followup, now) {
+  return Boolean(followup.followUpAt && new Date(followup.followUpAt).getTime() <= now);
+}
+
+function isRecurringReminderDue(followup, now) {
+  if (followup.followUpAt && new Date(followup.followUpAt).getTime() > now) {
+    return false;
+  }
+
+  const lastReminderAt = followup.lastReminderAt || followup.lastTouchedAt || followup.createdAt;
+  if (!lastReminderAt) return true;
+
+  return now - new Date(lastReminderAt).getTime() >= REMINDER_INTERVAL_MS;
 }
 
 export function scheduleDailyDigest(client, userId) {
