@@ -7,7 +7,8 @@ const TMP_STORE_PATH = new URL('./followups.tmp.json', import.meta.url);
 
 const EMPTY_STORE = {
   followups: [],
-  clientCounters: {}
+  clientCounters: {},
+  clients: {}
 };
 
 export async function loadStore() {
@@ -18,6 +19,9 @@ export async function loadStore() {
       followups: Array.isArray(parsed.followups) ? parsed.followups : [],
       clientCounters: parsed.clientCounters && typeof parsed.clientCounters === 'object'
         ? parsed.clientCounters
+        : {},
+      clients: parsed.clients && typeof parsed.clients === 'object'
+        ? parsed.clients
         : {}
     };
   } catch (error) {
@@ -46,10 +50,65 @@ export async function getFollowupById(shortId) {
   return data.followups.find((followup) => followup.shortId.toUpperCase() === normalized) ?? null;
 }
 
+export async function getClientProfile(clientName) {
+  const data = await loadStore();
+  const key = normalizeClientKey(clientName);
+  return data.clients[key] ?? null;
+}
+
+export async function getFollowupsByClient(clientName) {
+  const data = await loadStore();
+  const key = normalizeClientKey(clientName);
+  return data.followups.filter((followup) => normalizeClientKey(followup.client) === key);
+}
+
+export async function upsertClientProfile(clientName, changes = {}) {
+  const data = await loadStore();
+  const now = new Date().toISOString();
+  const key = normalizeClientKey(clientName);
+  const existing = data.clients[key] ?? {
+    name: clientName,
+    preferredPlatform: changes.preferredPlatform ?? 'discord',
+    notes: '',
+    lastInteractionSummary: '',
+    createdAt: now,
+    updatedAt: now
+  };
+
+  data.clients[key] = {
+    ...existing,
+    ...changes,
+    name: changes.name ?? existing.name ?? clientName,
+    updatedAt: now
+  };
+
+  await saveStore(data);
+  return data.clients[key];
+}
+
 export async function addFollowup(fields) {
   const data = await loadStore();
   const now = new Date().toISOString();
   const shortId = generateShortId(fields.client, data);
+  const clientKey = normalizeClientKey(fields.client);
+
+  if (!data.clients[clientKey]) {
+    data.clients[clientKey] = {
+      name: fields.client,
+      preferredPlatform: fields.platform ?? 'discord',
+      notes: '',
+      lastInteractionSummary: fields.context ?? '',
+      createdAt: now,
+      updatedAt: now
+    };
+  } else {
+    data.clients[clientKey] = {
+      ...data.clients[clientKey],
+      preferredPlatform: data.clients[clientKey].preferredPlatform || fields.platform || 'discord',
+      lastInteractionSummary: fields.context ?? data.clients[clientKey].lastInteractionSummary ?? '',
+      updatedAt: now
+    };
+  }
 
   const followup = {
     id: randomUUID?.() ?? nanoid(),
@@ -64,6 +123,11 @@ export async function addFollowup(fields) {
     status: fields.status ?? 'waiting_on_me',
     snoozeCount: fields.snoozeCount ?? 0,
     snoozeReason: fields.snoozeReason ?? '',
+    reminderLevel: fields.reminderLevel ?? 0,
+    blocker: fields.blocker ?? '',
+    delayReason: fields.delayReason ?? '',
+    nextAction: fields.nextAction ?? 'decide_next_action',
+    lastReminderAt: fields.lastReminderAt ?? null,
     followUpAt: fields.followUpAt ?? fields.deadline ?? null,
     deadline: fields.deadline ?? null,
     lastTouchedAt: now,
@@ -118,6 +182,32 @@ export async function appendHistory(shortId, action, note = '') {
   return followup;
 }
 
+export async function recordDecision(shortId, decision, changes = {}, note = '') {
+  const data = await loadStore();
+  const normalized = String(shortId || '').trim().toUpperCase();
+  const followup = data.followups.find((item) => item.shortId.toUpperCase() === normalized);
+
+  if (!followup) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  followup.history = Array.isArray(followup.history) ? followup.history : [];
+  Object.assign(followup, changes, {
+    nextAction: changes.nextAction ?? decision,
+    updatedAt: now,
+    lastTouchedAt: now
+  });
+  followup.history.push({
+    action: decision,
+    at: now,
+    note
+  });
+
+  await saveStore(data);
+  return followup;
+}
+
 export function generateShortId(clientName, data) {
   const store = data ?? EMPTY_STORE;
   const letters = String(clientName || 'XXX')
@@ -129,4 +219,11 @@ export function generateShortId(clientName, data) {
   const nextCounter = (store.clientCounters[letters] ?? 0) + 1;
   store.clientCounters[letters] = nextCounter;
   return `${letters}-${String(nextCounter).padStart(2, '0')}`;
+}
+
+export function normalizeClientKey(clientName) {
+  return String(clientName || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
 }

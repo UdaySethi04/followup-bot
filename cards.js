@@ -14,11 +14,58 @@ const TIMEZONE = process.env.TIMEZONE || 'Asia/Kolkata';
 const PRIORITY_WEIGHT = { high: 0, medium: 1, low: 2 };
 
 export function reminderCard(followup) {
-  return buildFollowupCard(followup, `Follow-up ${followup.shortId}`);
+  return decisionReminderCard(followup);
 }
 
 export function overdueCard(followup) {
   return buildFollowupCard(followup, `Overdue: ${followup.shortId}`, overdueDurationText(followup));
+}
+
+export function decisionReminderCard(followup, clientProfile = null) {
+  const level = Math.min(Number(followup.reminderLevel ?? 0), 3);
+  const title = level >= 3
+    ? `Stalled loop: ${followup.shortId}`
+    : level >= 2
+      ? `Decision needed: ${followup.shortId}`
+      : `Follow-up: ${followup.shortId}`;
+  const nudge = level >= 3
+    ? 'This loop is stalled. Decide now: reply, intentionally delay, wait on the client, or close it.'
+    : level >= 2
+      ? 'This needs a decision, not another vague later.'
+      : 'Pick the next concrete action.';
+
+  const details = [
+    `**${nudge}**`,
+    `**Client:** ${followup.client}`,
+    `**Project:** ${followup.project}`,
+    `**Context:** ${followup.context}`,
+    `**Promised:** ${followup.promised || 'Not specified'}`,
+    `**Status:** ${humanizeStatus(followup.status)}`,
+    `**Priority:** ${followup.priority}`,
+    `**Deadline:** ${formatDate(followup.deadline)}`,
+    `**Last reminder:** ${formatDate(followup.lastReminderAt)}`,
+    `**Next action:** ${humanizeStatus(followup.nextAction || 'decide_next_action')}`,
+    clientProfile?.notes ? `**Client notes:** ${clientProfile.notes}` : ''
+  ].filter(Boolean).join('\n');
+
+  const container = baseContainer(title, details);
+  container.addActionRowComponents(
+    new ActionRowBuilder().addComponents(
+      button(`draft_${followup.shortId}`, 'Reply Draft', ButtonStyle.Primary),
+      button(`waiting_${followup.shortId}`, 'Waiting on Client', ButtonStyle.Success),
+      button(`needinfo_${followup.shortId}`, 'Need Info', ButtonStyle.Secondary),
+      button(`delay_${followup.shortId}`, 'Delay', ButtonStyle.Secondary),
+      button(`pending_${followup.shortId}`, 'Still Pending', ButtonStyle.Secondary)
+    )
+  );
+  container.addActionRowComponents(
+    new ActionRowBuilder().addComponents(
+      button(`close_${followup.shortId}`, 'Close', ButtonStyle.Danger),
+      button(`profile_${followup.shortId}`, 'Client Profile', ButtonStyle.Secondary)
+    )
+  );
+
+  return { components: [container], flags: COMPONENTS_V2_FLAG };
 }
 
 export function inboxCard(followups) {
@@ -58,6 +105,33 @@ export function allFollowupsCard(followups) {
 }
 
 export function dailyDigestCard(waiting, overdue) {
+  return triageDigestCard(waiting, overdue, waiting.filter((followup) => Number(followup.reminderLevel ?? 0) >= 2));
+}
+
+export function triageDigestCard(waiting, overdue, stalled = []) {
+  const waitingOnClient = waiting.filter((followup) => followup.status === 'waiting_on_client');
+  const waitingOnYou = waiting.filter((followup) => followup.status === 'waiting_on_me');
+  const needsDecision = waitingOnYou.filter((followup) => Number(followup.reminderLevel ?? 0) >= 2);
+  const stalledIds = new Set(stalled.map((followup) => followup.shortId));
+  const stalledItems = waitingOnYou.filter((followup) => stalledIds.has(followup.shortId) || Number(followup.reminderLevel ?? 0) >= 3);
+  const sections = [
+    section('Needs decision', needsDecision),
+    section('Overdue', overdue),
+    section('Waiting on you', waitingOnYou),
+    section('Waiting on client', waitingOnClient),
+    stalledItems.length ? section('Stalled', stalledItems) : ''
+  ].filter(Boolean);
+  const total = new Set([...waiting, ...overdue].map((followup) => followup.shortId)).size;
+
+  return displayOnlyCard(
+    'Triage Digest',
+    sections.length
+      ? `Open loops: **${total}**\n\n${sections.join('\n\n')}\n\n**${total} people need a clear next step.**`
+      : 'No open loops need your attention.'
+  );
+}
+
+export function legacyDailyDigestCard(waiting, overdue) {
   const open = [...waiting, ...overdue].sort(compareByPriorityThenDeadline);
   const list = open.length
     ? open.map((item) => `**${item.shortId}** | ${item.client} | ${item.project} | ${item.priority} | ${humanizeStatus(item.status)}`).join('\n')
@@ -68,6 +142,26 @@ export function dailyDigestCard(waiting, overdue) {
     'Daily Digest',
     `Open loops: **${open.length}**\n\n${list}\n\n**${peopleWaiting} people waiting on you.**`
   );
+}
+
+export function clientProfileCard(clientProfile, followups) {
+  const open = followups.filter((followup) => followup.status !== 'closed');
+  const list = open.length
+    ? open
+      .sort(compareByPriorityThenDeadline)
+      .map((item) => `**${item.shortId}** | ${item.project} | ${item.priority} | ${humanizeStatus(item.status)} | ${formatDate(item.deadline)}`)
+      .join('\n')
+    : 'No open loops for this client.';
+
+  return displayOnlyCard('Client Profile', [
+    `**Name:** ${clientProfile?.name || 'Unknown'}`,
+    `**Preferred platform:** ${clientProfile?.preferredPlatform || 'discord'}`,
+    `**Notes:** ${clientProfile?.notes || 'No notes yet.'}`,
+    `**Last interaction:** ${clientProfile?.lastInteractionSummary || 'Not recorded.'}`,
+    '',
+    '**Open loops**',
+    list
+  ].join('\n'));
 }
 
 export function catchUpDigestCard(overdue) {
@@ -109,6 +203,10 @@ export function helpCard() {
     '`/followup list` - show all non-closed loops',
     '`/inbox` - show loops waiting on you',
     '`/overdue` - show overdue loops',
+    '`/draft <id>` - generate a copyable client reply',
+    '`/client show` - see client notes and open loops',
+    '`/client note` - update client notes',
+    '`/client platform` - update preferred platform',
     '`/replied <id>` - mark replied and waiting on client',
     '`/snooze <id>` - snooze for 1 hour',
     '`/delay <id> <deadline>` - intentionally delay',
@@ -118,7 +216,7 @@ export function helpCard() {
     '**Deadline examples**',
     '`today 6pm`, `tomorrow 3pm`, `monday 10am`, `in 2 hours`, `eod`, `eow`',
     '',
-    'Ping me with `@FollowUp` anytime to see this help window.'
+    'Ping me with `@FollowUp` anytime to see this help window. Reminder cards now ask you to make a next-action decision instead of just poking you.'
   ].join('\n'));
 }
 
@@ -175,6 +273,16 @@ function displayOnlyCard(title, body) {
   return { components: [container], flags: COMPONENTS_V2_FLAG };
 }
 
+function section(title, followups) {
+  const unique = [...new Map(followups.map((followup) => [followup.shortId, followup])).values()];
+  if (!unique.length) return '';
+  const lines = unique
+    .sort(compareByPriorityThenDeadline)
+    .slice(0, 8)
+    .map((item) => `**${item.shortId}** | ${item.client} | ${item.project} | ${item.priority} | ${humanizeStatus(item.nextAction || item.status)}`);
+  return `### ${title}\n${lines.join('\n')}`;
+}
+
 function baseContainer(title, body) {
   return new ContainerBuilder()
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${title}`))
@@ -182,12 +290,17 @@ function baseContainer(title, body) {
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(body.slice(0, 4000)));
 }
 
-function button(customId, label, style, emoji) {
-  return new ButtonBuilder()
+function button(customId, label, style, emoji = null) {
+  const builder = new ButtonBuilder()
     .setCustomId(customId)
     .setLabel(label)
-    .setStyle(style)
-    .setEmoji(emoji);
+    .setStyle(style);
+
+  if (emoji) {
+    builder.setEmoji(emoji);
+  }
+
+  return builder;
 }
 
 export function formatDate(value) {

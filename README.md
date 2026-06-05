@@ -1,6 +1,6 @@
 # FollowUp Bot
 
-FollowUp Bot is a local Discord accountability bot for freelancers. It tracks open client loops in your DMs so you can answer the real question: "who am I leaving hanging?" It is not a generic reminder bot; it is a small personal inbox for promises, replies, delays, and overdue follow-ups.
+FollowUp Bot is a local Discord accountability bot for freelancers. It tracks open client loops in your DMs so you can answer the real question: "who am I leaving hanging?" It is now a decision coach too: reminder cards push you to reply, wait on the client, ask for info, delay intentionally, or close the loop.
 
 ## One-time Discord setup
 
@@ -45,6 +45,10 @@ pm2 save
 | `/followup list` | Shows all non-closed follow-ups grouped by status. |
 | `/inbox` | Shows only items currently waiting on you. |
 | `/overdue` | DMs cards for every overdue item. |
+| `/draft <id> type:<status_update\|apology\|follow_up\|delay>` | Generates a simple copyable client reply draft. |
+| `/client show client:<name>` | Shows client notes, preferred platform, and open loops. |
+| `/client note client:<name> note:<text>` | Updates lightweight client notes. |
+| `/client platform client:<name> platform:<discord\|whatsapp\|email>` | Updates the preferred client platform. |
 | `/replied <id>` | Marks an item as waiting on the client. |
 | `/close <id>` | Closes an item. |
 | `/snooze <id>` | Snoozes an item for 1 hour. |
@@ -73,11 +77,11 @@ When the bot starts, it immediately checks for missed follow-ups. Any item whose
 
 ## Digest schedule
 
-FollowUp Bot sends daily digest DMs at 09:00, 15:00, and 19:00 in your configured timezone. Individual due reminders are still checked every 5 minutes and only sent once.
+FollowUp Bot sends triage digest DMs at 09:00, 15:00, and 19:00 in your configured timezone. The digest groups open loops by needs decision, overdue, waiting on you, and waiting on client.
 
 ## Reminder frequency
 
-FollowUp Bot checks every 5 minutes. If a follow-up has a specific due time, it sends a reminder when that time arrives. If a loop is still `waiting_on_me`, it also re-nudges you every `REMINDER_INTERVAL_HOURS` hours, which defaults to 3.
+FollowUp Bot checks every 5 minutes. If a follow-up has a specific due time, it sends a decision reminder when that time arrives. If a loop is still `waiting_on_me`, it re-nudges every `REMINDER_INTERVAL_HOURS` hours, defaults to 3, and escalates from a normal reminder to a decision prompt to a stalled-loop card.
 
 ## Timezone
 
@@ -85,4 +89,4 @@ The bot defaults to `Asia/Kolkata`. Change `TIMEZONE` in `.env` if you want dead
 
 ## Data
 
-All data lives in `followups.json`. There is no database. Writes are atomic: the bot writes `followups.tmp.json` first, then renames it to `followups.json` to reduce the risk of corruption if the process crashes.
+All data lives in `followups.json`. There is no database. The file stores follow-ups, client counters, and lightweight client profiles under a top-level `clients` object. Writes are atomic: the bot writes `followups.tmp.json` first, then renames it to `followups.json` to reduce the risk of corruption if the process crashes.

@@ -9,10 +9,11 @@ import {
 } from 'discord.js';
 import {
   allFollowupsCard,
+  clientProfileCard,
+  decisionReminderCard,
   helpCard,
   inboxCard,
   overdueCard,
-  reminderCard,
   snoozeWarningCard
 } from './cards.js';
 import { DEADLINE_PARSE_ERROR, parseDeadline, tomorrowAtNine } from './parser.js';
@@ -20,8 +21,12 @@ import { startScheduler } from './scheduler.js';
 import {
   addFollowup,
   appendHistory,
+  getClientProfile,
   getAllFollowups,
+  getFollowupsByClient,
   getFollowupById,
+  recordDecision,
+  upsertClientProfile,
   updateFollowup
 } from './store.js';
 
@@ -102,7 +107,56 @@ const commands = [
     .setName('delay')
     .setDescription('Intentionally delay a follow-up')
     .addStringOption((option) => option.setName('id').setDescription('Short ID, e.g. DZG-01').setRequired(true))
-    .addStringOption((option) => option.setName('deadline').setDescription('New deadline').setRequired(true))
+    .addStringOption((option) => option.setName('deadline').setDescription('New deadline').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('draft')
+    .setDescription('Generate a simple client reply draft')
+    .addStringOption((option) => option.setName('id').setDescription('Short ID, e.g. DZG-01').setRequired(true))
+    .addStringOption((option) =>
+      option
+        .setName('type')
+        .setDescription('Draft type')
+        .setRequired(true)
+        .addChoices(
+          { name: 'status_update', value: 'status_update' },
+          { name: 'apology', value: 'apology' },
+          { name: 'follow_up', value: 'follow_up' },
+          { name: 'delay', value: 'delay' }
+        )
+    ),
+  new SlashCommandBuilder()
+    .setName('client')
+    .setDescription('Manage lightweight client memory')
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('note')
+        .setDescription('Update notes for a client')
+        .addStringOption((option) => option.setName('client').setDescription('Client name').setRequired(true))
+        .addStringOption((option) => option.setName('note').setDescription('Client note').setRequired(true))
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('show')
+        .setDescription('Show client profile and open loops')
+        .addStringOption((option) => option.setName('client').setDescription('Client name').setRequired(true))
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('platform')
+        .setDescription('Update preferred client platform')
+        .addStringOption((option) => option.setName('client').setDescription('Client name').setRequired(true))
+        .addStringOption((option) =>
+          option
+            .setName('platform')
+            .setDescription('Preferred platform')
+            .setRequired(true)
+            .addChoices(
+              { name: 'discord', value: 'discord' },
+              { name: 'whatsapp', value: 'whatsapp' },
+              { name: 'email', value: 'email' }
+            )
+        )
+    )
 ].map((command) => command.toJSON());
 
 client.once('ready', async () => {
@@ -193,12 +247,12 @@ async function handleCommand(interaction) {
   }
 
   if (interaction.commandName === 'replied') {
-    await updateStatusCommand(interaction, 'waiting_on_client', 'replied', { snoozeCount: 0 });
+    await updateStatusCommand(interaction, 'waiting_on_client', 'replied', { snoozeCount: 0, nextAction: 'waiting_on_client' });
     return;
   }
 
   if (interaction.commandName === 'close') {
-    await updateStatusCommand(interaction, 'closed', 'closed', { snoozeCount: 0 });
+    await updateStatusCommand(interaction, 'closed', 'closed', { snoozeCount: 0, nextAction: 'closed' });
     return;
   }
 
@@ -209,6 +263,16 @@ async function handleCommand(interaction) {
 
   if (interaction.commandName === 'delay') {
     await handleDelayCommand(interaction);
+    return;
+  }
+
+  if (interaction.commandName === 'draft') {
+    await handleDraftCommand(interaction);
+    return;
+  }
+
+  if (interaction.commandName === 'client') {
+    await handleClientCommand(interaction);
   }
 }
 
@@ -233,7 +297,7 @@ async function handleAdd(interaction) {
     sourceUrl: interaction.options.getString('source_url') ?? ''
   });
 
-  await interaction.user.send(reminderCard(followup));
+  await interaction.user.send(decisionReminderCard(followup, await getClientProfile(followup.client)));
   await interaction.reply({ content: `Added follow-up ${followup.shortId} and sent the card to your DM.`, ephemeral: true });
 }
 
@@ -242,7 +306,13 @@ async function updateStatusCommand(interaction, status, historyAction, extraChan
   const followup = await getFollowupOrReply(interaction, shortId);
   if (!followup) return;
 
-  const updated = await updateFollowup(shortId, { status, followUpAt: null, ...extraChanges });
+  const updated = await updateFollowup(shortId, {
+    status,
+    followUpAt: null,
+    reminderLevel: 0,
+    nextAction: historyAction,
+    ...extraChanges
+  });
   await appendHistory(shortId, historyAction);
   await interaction.reply({ content: `${updated.shortId} marked ${status.replaceAll('_', ' ')}.`, ephemeral: true });
 }
@@ -278,10 +348,57 @@ async function handleDelayCommand(interaction) {
     status: 'delayed',
     deadline,
     followUpAt: deadline,
-    snoozeCount: 0
+    snoozeCount: 0,
+    reminderLevel: 0,
+    delayReason: `Delayed until ${rawDeadline}.`,
+    nextAction: 'delayed'
   });
   await appendHistory(shortId, 'delayed', `Delayed until ${rawDeadline}.`);
   await interaction.reply({ content: `${updated.shortId} delayed intentionally.`, ephemeral: true });
+}
+
+async function handleDraftCommand(interaction) {
+  const shortId = interaction.options.getString('id', true);
+  const type = interaction.options.getString('type', true);
+  const followup = await getFollowupOrReply(interaction, shortId);
+  if (!followup) return;
+
+  const draft = buildDraft(followup, type);
+  await recordDecision(shortId, 'draft_requested', { nextAction: 'reply_draft_requested' }, `Draft type: ${type}.`);
+  await interaction.reply({
+    content: `Draft for ${followup.shortId} (${type}):\n\n${draft}`,
+    ephemeral: true
+  });
+}
+
+async function handleClientCommand(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const clientName = interaction.options.getString('client', true);
+
+  if (subcommand === 'note') {
+    const note = interaction.options.getString('note', true);
+    const profile = await upsertClientProfile(clientName, { notes: note });
+    const followups = await getFollowupsByClient(clientName);
+    for (const followup of followups) {
+      await appendHistory(followup.shortId, 'client_note_updated', note);
+    }
+    await interaction.reply(clientProfileCard(profile, followups));
+    return;
+  }
+
+  if (subcommand === 'platform') {
+    const platform = interaction.options.getString('platform', true);
+    const profile = await upsertClientProfile(clientName, { preferredPlatform: platform });
+    const followups = await getFollowupsByClient(clientName);
+    await interaction.reply(clientProfileCard(profile, followups));
+    return;
+  }
+
+  if (subcommand === 'show') {
+    const profile = await upsertClientProfile(clientName);
+    const followups = await getFollowupsByClient(clientName);
+    await interaction.reply(clientProfileCard(profile, followups));
+  }
 }
 
 async function handleButton(interaction) {
@@ -298,17 +415,37 @@ async function handleButton(interaction) {
   }
 
   let updated;
-  if (action === 'replied') {
-    updated = await updateFollowup(shortId, { status: 'waiting_on_client', followUpAt: null, snoozeCount: 0 });
+  if (action === 'draft') {
+    await recordDecision(shortId, 'draft_requested', { nextAction: 'reply_draft_requested' }, 'Reply draft requested from button.');
+    await interaction.reply({
+      content: `Use /draft id:${shortId} type:status_update to generate a copyable reply. Try type:apology, type:follow_up, or type:delay if that fits better.`,
+      ephemeral: true
+    });
+    return;
+  } else if (action === 'profile') {
+    const profile = await upsertClientProfile(followup.client);
+    const followups = await getFollowupsByClient(followup.client);
+    await interaction.reply(clientProfileCard(profile, followups));
+    return;
+  } else if (action === 'needinfo') {
+    updated = await recordDecision(shortId, 'need_info', {
+      status: 'waiting_on_me',
+      blocker: 'need_info',
+      nextAction: 'need_info'
+    }, 'Marked as needing more info before replying.');
+  } else if (action === 'replied') {
+    updated = await updateFollowup(shortId, { status: 'waiting_on_client', followUpAt: null, snoozeCount: 0, reminderLevel: 0, nextAction: 'waiting_on_client' });
     await appendHistory(shortId, 'replied');
   } else if (action === 'waiting') {
-    updated = await updateFollowup(shortId, { status: 'waiting_on_client', followUpAt: null, snoozeCount: 0 });
+    updated = await updateFollowup(shortId, { status: 'waiting_on_client', followUpAt: null, snoozeCount: 0, reminderLevel: 0, nextAction: 'waiting_on_client' });
     await appendHistory(shortId, 'waiting_on_client');
   } else if (action === 'pending') {
-    updated = await updateFollowup(shortId, { status: 'waiting_on_me' });
-    await appendHistory(shortId, 'still_pending');
+    updated = await recordDecision(shortId, 'still_pending', {
+      status: 'waiting_on_me',
+      nextAction: 'still_pending'
+    }, 'Still pending after review.');
   } else if (action === 'tomorrow') {
-    updated = await updateFollowup(shortId, { followUpAt: tomorrowAtNine(TIMEZONE) });
+    updated = await updateFollowup(shortId, { followUpAt: tomorrowAtNine(TIMEZONE), nextAction: 'tomorrow' });
     await appendHistory(shortId, 'snoozed_tomorrow');
   } else if (action === 'snooze') {
     const result = await snoozeFollowup(followup);
@@ -318,14 +455,14 @@ async function handleButton(interaction) {
     }
     updated = result.followup;
   } else if (action === 'close') {
-    updated = await updateFollowup(shortId, { status: 'closed', followUpAt: null, snoozeCount: 0 });
+    updated = await updateFollowup(shortId, { status: 'closed', followUpAt: null, snoozeCount: 0, reminderLevel: 0, nextAction: 'closed' });
     await appendHistory(shortId, 'closed');
   } else {
     await interaction.reply({ content: 'Unknown button action.', ephemeral: true });
     return;
   }
 
-  await interaction.update(reminderCard(updated));
+  await interaction.update(decisionReminderCard(updated, await getClientProfile(updated.client)));
 }
 
 async function snoozeFollowup(followup) {
@@ -335,7 +472,9 @@ async function snoozeFollowup(followup) {
   if (nextCount >= 2 && !followup.snoozeReason) {
     const warned = await updateFollowup(followup.shortId, {
       snoozeCount: nextCount,
-      snoozeReason: 'warned'
+      snoozeReason: 'warned',
+      blocker: 'snoozed_twice',
+      nextAction: 'make_decision'
     });
     await appendHistory(followup.shortId, 'snoozed', 'Second snooze requested; warning shown.');
     return { followup: warned, warning: true };
@@ -344,10 +483,54 @@ async function snoozeFollowup(followup) {
   const updated = await updateFollowup(followup.shortId, {
     snoozeCount: nextCount,
     snoozeReason: '',
-    followUpAt: oneHourFromNow
+    followUpAt: oneHourFromNow,
+    nextAction: 'snoozed'
   });
   await appendHistory(followup.shortId, 'snoozed', 'Snoozed for 1 hour.');
   return { followup: updated, warning: false };
+}
+
+function buildDraft(followup, type) {
+  const client = followup.client;
+  const project = followup.project;
+  const context = followup.context;
+  const promised = followup.promised || 'the next update';
+  const deadline = followup.deadline
+    ? new Date(followup.deadline).toLocaleString('en-IN', { timeZone: TIMEZONE, dateStyle: 'medium', timeStyle: 'short' })
+    : 'soon';
+
+  if (type === 'apology') {
+    return [
+      `Hey ${client}, sorry for the delay on ${project}.`,
+      `I owed you ${promised}, and I did not want to leave you hanging.`,
+      `Current update: ${context}.`,
+      `I will send the next clear update by ${deadline}.`
+    ].join('\n');
+  }
+
+  if (type === 'follow_up') {
+    return [
+      `Hey ${client}, quick follow-up on ${project}.`,
+      `I wanted to check where we stand on this: ${context}.`,
+      'Let me know what you think, and I can move the next step forward.'
+    ].join('\n');
+  }
+
+  if (type === 'delay') {
+    return [
+      `Hey ${client}, quick update on ${project}.`,
+      `I need a little more time on ${context}.`,
+      `Rather than give you a vague update, I will send the next clear version by ${deadline}.`,
+      'Thanks for your patience.'
+    ].join('\n');
+  }
+
+  return [
+    `Hey ${client}, quick status update on ${project}.`,
+    `I am working through ${context}.`,
+    `The next thing I owe you is ${promised}.`,
+    `I will follow up again by ${deadline}.`
+  ].join('\n');
 }
 
 async function getFollowupOrReply(interaction, shortId) {

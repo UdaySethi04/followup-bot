@@ -1,6 +1,6 @@
 import cron from 'node-cron';
-import { catchUpDigestCard, dailyDigestCard, reminderCard, weeklyReportCard } from './cards.js';
-import { appendHistory, getAllFollowups, updateFollowup } from './store.js';
+import { catchUpDigestCard, decisionReminderCard, triageDigestCard, weeklyReportCard } from './cards.js';
+import { appendHistory, getAllFollowups, getClientProfile, updateFollowup } from './store.js';
 import { generateWeeklyStats } from './report.js';
 
 const TIMEZONE = process.env.TIMEZONE || 'Asia/Kolkata';
@@ -55,11 +55,16 @@ export function scheduleFollowUps(client, userId) {
     );
 
     for (const followup of due) {
-      await user.send(reminderCard(followup));
-      await updateFollowup(followup.shortId, {
+      const nextReminderLevel = Math.min(Number(followup.reminderLevel ?? 0) + 1, 3);
+      const historyAction = nextReminderLevel >= 3 ? 'stalled' : 'decision_prompted';
+      const updated = await updateFollowup(followup.shortId, {
         followUpAt: isFollowupDue(followup, now) ? null : followup.followUpAt,
-        lastReminderAt: new Date(now).toISOString()
+        lastReminderAt: new Date(now).toISOString(),
+        reminderLevel: nextReminderLevel,
+        nextAction: nextReminderLevel >= 2 ? 'make_decision' : (followup.nextAction || 'decide_next_action')
       });
+      await appendHistory(followup.shortId, historyAction, `Reminder level ${nextReminderLevel}.`);
+      await user.send(decisionReminderCard(updated, await getClientProfile(updated.client)));
     }
   }, { timezone: TIMEZONE });
 }
@@ -87,9 +92,10 @@ export function scheduleDailyDigest(client, userId) {
 
     const user = await client.users.fetch(userId);
     const followups = await getAllFollowups();
-    const waiting = followups.filter((followup) => followup.status === 'waiting_on_me');
+    const open = followups.filter((followup) => followup.status !== 'closed');
     const overdue = followups.filter((followup) => followup.status === 'overdue');
-    await user.send(dailyDigestCard(waiting, overdue));
+    const stalled = open.filter((followup) => Number(followup.reminderLevel ?? 0) >= 3);
+    await user.send(triageDigestCard(open, overdue, stalled));
   };
 
   cron.schedule('0 9 * * *', sendDigest, { timezone: TIMEZONE });
