@@ -70,6 +70,20 @@ export function dailyDigestCard(waiting, overdue) {
   );
 }
 
+export function catchUpDigestCard(overdue) {
+  const list = overdue.length
+    ? overdue
+      .sort(compareByPriorityThenDeadline)
+      .map((item) => `**${item.shortId}** | ${item.client} | ${item.project} | ${item.priority} | ${humanizeStatus(item.status)}`)
+      .join('\n')
+    : 'No missed reminders found.';
+
+  return displayOnlyCard(
+    'Startup Catch-up',
+    `Missed reminders marked overdue: **${overdue.length}**\n\n${list}`
+  );
+}
+
 export function weeklyReportCard(stats) {
   const completionRate = stats.total > 0
     ? Math.round((stats.closed / stats.total) * 100)
